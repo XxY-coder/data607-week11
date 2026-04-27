@@ -5,7 +5,6 @@ format: html
 editor: visual
 ---
 
-
 ## 1.How will you tackle the problem?
 
 I will use data from previous surveys data and apply a relatively simple, easily understandable user-based collaborative filtering method to generate recommendations based on the preferences of similar users.
@@ -15,3 +14,174 @@ I will use data from previous surveys data and apply a relatively simple, easily
 This dataset is relatively small, and some ratings are incomplete, so the model's results may be somewhat limited.
 
 "https://github.com/XxY-coder/data607-week11/raw/refs/heads/main/movies_ratings.csv"
+
+------------------------------------------------------------------------
+
+## 3.Read the data.
+
+The same dataset was used, but it was loaded from a different GitHub repository.
+
+```{r}
+library(tidyverse)
+library(janitor)
+
+movies_rating <- read_csv("https://github.com/XxY-coder/data607-week11/raw/refs/heads/main/movies_ratings.csv") |>
+  clean_names()
+
+# Convert wide data to long format
+rating_long <- 
+  movies_rating |>
+  pivot_longer(
+    cols = -critics,
+    names_to = "movie",
+    values_to = "rating",
+    values_drop_na = TRUE
+)
+
+glimpse(rating_long)
+```
+
+## 4.Choose one personalized recommendation algorithm.
+
+This project uses user-to-user collaborative filtering because the dataset contains only user-movie ratings, without movie features, and the dataset is small.
+
+```{r}
+# 2. Calculate similarity between two critics
+similarity_score <- 
+  function(u1, u2, data) {
+  common <-
+    inner_join(
+    data %>% filter(critics == u1) %>% select(movie, rating1 = rating),
+    data %>% filter(critics == u2) %>% select(movie, rating2 = rating),
+    by = "movie"
+)
+  if (nrow(common) == 0) return(NA_real_)
+  1 / (1 + mean(abs(common$rating1 - common$rating2)))
+}
+```
+
+```{r}
+# 3. Predict missing rating
+predict_rating <- 
+  function(user, item, data) {
+  other_users <-
+    data |>
+    filter(movie == item, critics != user)
+  
+  if (nrow(other_users) == 0) {
+    return(mean(data$rating)
+           )
+}
+  
+  other_users <- 
+    other_users |>
+    mutate(similarity = map_dbl(critics, ~ similarity_score(user, .x, data))) |>
+    filter(!is.na(similarity))
+  
+  if (nrow(other_users) == 0) {
+    return(mean(data$rating)
+           )
+}
+  
+  weighted.mean(other_users$rating, other_users$similarity)
+}
+
+```
+
+```{r}
+# 4. Recommend top 2 unrated movies for each critic
+all_pairs <- 
+  expand_grid(
+  critics = unique(rating_long$critics),
+  movie = unique(rating_long$movie)
+)
+
+recommendations <-
+  all_pairs |>
+  anti_join(rating_long, by = c("critics", "movie")) |>
+  mutate(
+    predicted_rating = map2_dbl(
+      critics,
+      movie,
+      ~ predict_rating(.x, .y, rating_long)
+    )
+) |>
+  group_by(critics) |>
+  arrange(desc(predicted_rating), .by_group = TRUE) |>
+  slice_head(n = 2)
+
+clean_recommendations <- 
+  recommendations %>% 
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+clean_recommendations
+```
+
+## 5.Evaluate the performance of the recommender.
+
+I used a hold-out evaluation to test the recommender on ratings that were originally known but temporarily removed. MAE and RMSE measure how close the predicted ratings are to the actual ratings.
+
+```{r}
+# 5. Evaluation using hold-out method
+set.seed(43876)
+
+test_data <-
+  rating_long |>
+  group_by(critics) |>
+  filter(n() > 1) |>
+  slice_sample(n = 1) |>
+  ungroup()
+
+train_data <- 
+  anti_join(
+  rating_long,
+  test_data,
+  by = c("critics", "movie")
+)
+
+eval_results <- 
+  test_data |>
+  mutate(
+    predicted_rating = map2_dbl(
+      critics,
+      movie,
+      ~ predict_rating(.x, .y, train_data)
+    ),
+    error = rating - predicted_rating,
+    error = round(error, 3)
+)
+
+eval_results
+```
+
+```{r}
+# MAE: Mean Absolute Error; the smaller, the better
+# RMSE: Root Mean Square Error; the smaller, the better; it is more sensitive to large errors
+
+eval_metrics <-
+  eval_results |>
+  summarise(
+    MAE = mean(abs(error)),
+    RMSE = sqrt(mean(error^2))
+  )
+
+eval_metrics
+```
+
+The result shows that the recommender has an MAE of about 1.57 and an RMSE of about 2.03. This means that, on average, the predicted ratings are about 1.57 points away from the actual ratings. The RMSE is higher because it is more sensitive to larger errors, such as HP’s rating for stranger_things_5, where the actual rating was 1 but the model predicted 5.
+
+## 6. Conclusion
+
+The recommender only outputs the top two unrated movies for each critic, ranked by predicted rating.
+
+*CO:* --stranger_things_5 (4.400) and --now_you_see_me_now_you_don_t (4.000).
+
+*HP:* --zootopia_2 (4.571) and --the_sponge_bob_movie_search_for_square_pants (4.000).
+
+*J:* --zootopia_2 (4.182) and --now_you_see_me_now_you_don_t (3.333).
+
+*W:* --the_sponge_bob_movie_search_for_square_pants (3.595) and --now_you_see_me_now_you_don_t (2.889).
+
+*ZH:* --stranger_things_5 (4.571) and --zootopia_2 (4.000).
+
+*ZY:* --zootopia_2 (4.556) and --the_sponge_bob_movie_search_for_square_pants (4.000).
